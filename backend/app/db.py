@@ -317,7 +317,9 @@ DEFAULT_STORE = {
             "details": {"version": "1.0.0", "engine": "Dynamic Priority Queue + Rule Evaluator (Flask)"},
             "created_at": iso_now(-86400)
         }
-    ]
+    ],
+    "patient_biometrics": [],
+    "biometric_verification_logs": []
 }
 
 

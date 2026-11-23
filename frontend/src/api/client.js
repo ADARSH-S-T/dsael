@@ -76,6 +76,17 @@ export const api = {
   addStaff: (payload) => request('/admin/staff', { method: 'POST', body: JSON.stringify(payload) }),
   toggleStaffStatus: (id) => request(`/admin/staff/${id}/toggle`, { method: 'PATCH' }),
 
+  // Biometric / Face Recognition
+  getBiometricStatus: () => request('/biometric/status'),
+  checkEnrolled: (patientId) => request(`/biometric/enrolled/${patientId}`),
+  registerFace: (payload) => request('/biometric/register', { method: 'POST', body: JSON.stringify(payload) }),
+  identifyByFace: (payload) => request('/biometric/identify', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Admin Biometric Management
+  getAdminBiometricLogs: () => request('/biometric/admin/logs'),
+  getAdminBiometricPatients: () => request('/biometric/admin/patients'),
+  resetPatientBiometric: (patientId, payload) => request(`/biometric/admin/reset/${patientId}`, { method: 'POST', body: JSON.stringify(payload) }),
+
   // Logs
   getNotifications: () => request('/admin/notifications'),
   getActivityLogs: () => request('/admin/activity-logs')

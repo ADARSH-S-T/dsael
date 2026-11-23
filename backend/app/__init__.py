@@ -6,6 +6,7 @@ from app.routes.patients import patients_bp
 from app.routes.queue import queue_bp
 from app.routes.staff import staff_bp
 from app.routes.admin import admin_bp
+from app.routes.biometric import biometric_bp
 
 def create_app():
     app = Flask(__name__)
@@ -41,6 +42,7 @@ def create_app():
     app.register_blueprint(queue_bp, url_prefix="/api/queue")
     app.register_blueprint(staff_bp, url_prefix="/api/staff")
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
+    app.register_blueprint(biometric_bp, url_prefix="/api/biometric")
 
     # 404 JSON Handler
     @app.errorhandler(404)

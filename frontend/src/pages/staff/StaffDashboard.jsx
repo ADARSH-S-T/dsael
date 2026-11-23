@@ -5,6 +5,9 @@ import StatusBadge from '../../components/StatusBadge';
 import api from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 
+// Privacy: mask patient names for lab staff (biometric privacy feature)
+const maskName = (name) => name ? name.split(' ').map(w => 'X'.repeat(w.length)).join(' ') : 'PATIENT';
+
 export function StaffDashboard({ onOpenCurrentTest }) {
   const { user } = useAuth();
   const [stats, setStats] = useState({
