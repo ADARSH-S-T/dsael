@@ -72,19 +72,22 @@ run.bat
 Located in [`dsael/run.bat`](file:///c:/Users/mryog/OneDrive/Documents/3rd%20sem%20El/dsa/dsael/run.bat).
 
 This automatically:
-1. Validates Node.js 18+.
-2. Launches Express Backend on `http://127.0.0.1:5001`.
-3. Launches Vite Frontend on `http://localhost:3000`.
+1. Validates Python 3.10+ and Node.js 18+.
+2. Launches the Python Flask Backend on `http://127.0.0.1:5001`.
+3. Launches the Vite React Frontend on `http://localhost:3000`.
 4. Opens `http://localhost:3000` in your default browser.
 
 ### Manual Launch:
 ```bash
-# Backend (Port 5001)
+# 1. Backend (Python Flask - Port 5001)
 cd backend
-npm install
-npm start
+pip install -r requirements.txt
+python server.py
 
-# Frontend (Port 3000)
+# Optional: Run Backend Verification Test Suite
+python test_backend.py
+
+# 2. Frontend (React Vite - Port 3000)
 cd frontend
 npm install
 npm run dev
