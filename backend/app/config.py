@@ -16,7 +16,7 @@ HOST = os.getenv("HOST", "0.0.0.0")
 
 # Supabase Credentials
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
+SUPABASE_ANON_KEY = (os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("SUPABASE_KEY", "")).strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY
 
@@ -34,5 +34,18 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "").strip()
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 FROM_EMAIL = os.getenv("FROM_EMAIL", "notifications@labflow.health").strip()
+
+# Cloudinary Credentials
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
+CLOUDINARY_UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "labflow_unsigned").strip()
+
+IS_CLOUDINARY_CONFIGURED = bool(
+    CLOUDINARY_CLOUD_NAME
+    and CLOUDINARY_API_KEY
+    and CLOUDINARY_API_SECRET
+)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "labflow_super_secret_enterprise_jwt_key_2026")

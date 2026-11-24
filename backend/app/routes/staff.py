@@ -2,8 +2,28 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from app.db import local_db
 from app.services.notification_service import send_notification
+from app.services.cloudinary_service import generate_and_upload_diagnostic_report, upload_file, is_cloudinary_available
 
 staff_bp = Blueprint("staff", __name__)
+
+def mask_patient_for_staff(patient: dict) -> dict:
+    """Mask patient identity for laboratory staff privacy."""
+    if not patient:
+        return None
+    full_name = patient.get("full_name", "")
+    masked_name = " ".join("X" * len(word) for word in full_name.split()) if full_name else "XXXXX XXXXX"
+    pid = patient.get("id", "")
+    code = f"PATIENT-{pid[:6].upper()}" if pid else "PATIENT-001"
+    return {
+        "id": pid,
+        "patient_code": code,
+        "full_name": masked_name,
+        "age": patient.get("age"),
+        "gender": patient.get("gender"),
+        "phone": "• • • • • • • • • •",
+        "email": "• • • • • • • • • •"
+    }
+
 
 @staff_bp.route("/dashboard", methods=["GET"])
 def get_dashboard_stats():
@@ -51,7 +71,7 @@ def get_current_test():
     assigned_staff = staff_members.get(active_test.get("assigned_to"))
 
     enriched_test = dict(active_test)
-    enriched_test["patient"] = patient
+    enriched_test["patient"] = mask_patient_for_staff(patient)
     enriched_test["assigned_staff_name"] = assigned_staff.get("full_name") if assigned_staff else "Assigned Staff"
 
     return jsonify({
@@ -106,12 +126,17 @@ def complete_test():
 
         now_iso = datetime.now(timezone.utc).isoformat()
         tracking_num = test.get("tracking_number", "unknown")
-        generated_report_path = f"/reports/{tracking_num}_DiagnosticReport.pdf"
+        patient = next((p for p in local_db.get("patients") if p.get("id") == test.get("patient_id")), None)
+
+        # Generate / upload report to Cloudinary or use provided report URL
+        report_url = data.get("report_url") or data.get("report_path")
+        if not report_url:
+            report_url = generate_and_upload_diagnostic_report(test, patient)
 
         completed_test = local_db.update("tests", test_id, {
             "status": "COMPLETED",
             "completed_at": now_iso,
-            "report_path": generated_report_path,
+            "report_path": report_url,
             "remarks": remarks or "Analysis completed with verified clinical diagnostics."
         })
 
@@ -122,12 +147,12 @@ def complete_test():
             "entity_id": test_id,
             "details": {
                 "tracking_number": tracking_num,
-                "completion_time": now_iso
+                "completion_time": now_iso,
+                "report_url": report_url
             }
         })
 
         # Trigger patient SMS and Email notification
-        patient = next((p for p in local_db.get("patients") if p.get("id") == test.get("patient_id")), None)
         if patient:
             send_notification(
                 test_id=test["id"],
@@ -157,7 +182,7 @@ def get_completed_tests():
     enriched = []
     for t in tests:
         item = dict(t)
-        item["patient"] = patients.get(t.get("patient_id"))
+        item["patient"] = mask_patient_for_staff(patients.get(t.get("patient_id")))
         enriched.append(item)
 
     return jsonify({
@@ -165,3 +190,38 @@ def get_completed_tests():
         "count": len(enriched),
         "tests": enriched
     })
+
+
+@staff_bp.route("/upload-report", methods=["POST"])
+def upload_report():
+    """Uploads a diagnostic report file to Cloudinary."""
+    try:
+        # Check if multipart form upload
+        if "file" in request.files:
+            uploaded_file = request.files["file"]
+            filename = uploaded_file.filename or "DiagnosticReport.pdf"
+            result = upload_file(uploaded_file, filename=filename)
+            if result.get("success"):
+                return jsonify({
+                    "success": True,
+                    "url": result.get("secure_url"),
+                    "filename": filename,
+                    "message": "Report uploaded to Cloudinary successfully."
+                })
+            return jsonify({"success": False, "error": result.get("error")}), 400
+
+        # Check JSON payload
+        data = request.get_json(silent=True) or {}
+        file_url = data.get("file_url")
+        filename = data.get("filename") or "DiagnosticReport.pdf"
+        if file_url:
+            return jsonify({
+                "success": True,
+                "url": file_url,
+                "filename": filename
+            })
+
+        return jsonify({"success": False, "error": "No file or report URL provided."}), 400
+    except Exception as err:
+        return jsonify({"success": False, "error": str(err)}), 500
+

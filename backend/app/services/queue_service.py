@@ -37,13 +37,28 @@ def calculate_waiting_time(queue_entered_at: str) -> str:
         return "0m"
 
 
+def mask_patient_for_queue(patient: dict) -> dict:
+    if not patient:
+        return None
+    full_name = patient.get("full_name", "")
+    masked_name = " ".join("X" * len(word) for word in full_name.split()) if full_name else "XXXXX XXXXX"
+    pid = patient.get("id", "")
+    code = f"PATIENT-{pid[:6].upper()}" if pid else "PATIENT-001"
+    return {
+        "id": pid,
+        "patient_code": code,
+        "full_name": masked_name,
+        "age": patient.get("age"),
+        "gender": patient.get("gender")
+    }
+
 def get_priority_queue() -> list:
     waiting_tests = []
 
     if IS_SUPABASE_CONFIGURED:
         try:
             res = requests.get(
-                f"{SUPABASE_URL}/rest/v1/tests?status=eq.WAITING_IN_QUEUE&select=*,patient:patient_id(full_name,phone,email,age,gender)",
+                f"{SUPABASE_URL}/rest/v1/tests?status=eq.WAITING_IN_QUEUE&select=*,patient:patient_id(id,full_name,age,gender)",
                 headers={
                     "apikey": SUPABASE_KEY,
                     "Authorization": f"Bearer {SUPABASE_KEY}"
@@ -51,7 +66,12 @@ def get_priority_queue() -> list:
                 timeout=5
             )
             if res.ok:
-                waiting_tests = res.json()
+                raw_tests = res.json()
+                waiting_tests = []
+                for t in raw_tests:
+                    t_copy = dict(t)
+                    t_copy["patient"] = mask_patient_for_queue(t.get("patient"))
+                    waiting_tests.append(t_copy)
         except Exception as e:
             print(f"[QueueService] Supabase query fallback: {e}")
 
@@ -61,7 +81,7 @@ def get_priority_queue() -> list:
         waiting_tests = []
         for t in tests:
             t_copy = dict(t)
-            t_copy["patient"] = patients.get(t.get("patient_id"))
+            t_copy["patient"] = mask_patient_for_queue(patients.get(t.get("patient_id")))
             waiting_tests.append(t_copy)
 
     # Sort primarily by priority weight (1, 2, 3), then FIFO by queue_entered_at or registered_at

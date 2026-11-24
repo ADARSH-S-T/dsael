@@ -132,6 +132,27 @@ CREATE TABLE IF NOT EXISTS public.activity_logs (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- I. PATIENT BIOMETRICS TABLE (AES-256 Encrypted Face Embeddings)
+CREATE TABLE IF NOT EXISTS public.patient_biometrics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id UUID NOT NULL REFERENCES public.patients(id) ON DELETE CASCADE,
+    encrypted_face_template TEXT NOT NULL,
+    registration_status TEXT NOT NULL DEFAULT 'REGISTERED' CHECK (registration_status IN ('REGISTERED', 'RESET', 'DISABLED')),
+    consent_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- J. BIOMETRIC VERIFICATION LOGS TABLE (Audit Logs for Verification Attempts)
+CREATE TABLE IF NOT EXISTS public.biometric_verification_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id UUID REFERENCES public.patients(id) ON DELETE SET NULL,
+    verification_status TEXT NOT NULL CHECK (verification_status IN ('MATCHED', 'NO_MATCH', 'LIVENESS_FAILED', 'RATE_LIMITED', 'ERROR')),
+    confidence_score NUMERIC(6, 4) DEFAULT 0,
+    liveness_status TEXT NOT NULL CHECK (liveness_status IN ('PASS', 'FAIL', 'UNKNOWN')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ============================================================================
 -- 3. INDEXES FOR HIGH-PERFORMANCE DYNAMIC PRIORITY QUEUE
 -- ============================================================================
@@ -156,6 +177,8 @@ CREATE INDEX IF NOT EXISTS idx_tests_priority_queue ON public.tests (
 CREATE INDEX IF NOT EXISTS idx_patients_phone_email ON public.patients(phone, email);
 CREATE INDEX IF NOT EXISTS idx_priority_rules_active ON public.priority_rules(test_category, is_active);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON public.notifications(delivery_status, created_at);
+CREATE INDEX IF NOT EXISTS idx_patient_biometrics_patient ON public.patient_biometrics(patient_id);
+CREATE INDEX IF NOT EXISTS idx_biometric_logs_patient ON public.biometric_verification_logs(patient_id, created_at);
 
 -- ============================================================================
 -- 4. COLLISION-SAFE 5-DIGIT TRACKING NUMBER GENERATOR FUNCTION
@@ -291,6 +314,8 @@ ALTER TABLE public.priority_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.test_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activity_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.patient_biometrics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.biometric_verification_logs ENABLE ROW LEVEL SECURITY;
 
 -- Allow Public/Anon access required for Patient registration & tracking
 CREATE POLICY "Public registration of patients" ON public.patients
@@ -342,6 +367,22 @@ CREATE POLICY "Insert activity logs" ON public.activity_logs
     FOR INSERT WITH CHECK (true);
 
 CREATE POLICY "Read activity logs" ON public.activity_logs
+    FOR SELECT USING (true);
+
+-- Biometrics & verification logs policies (Backend-only / Admin access)
+CREATE POLICY "Public register biometrics" ON public.patient_biometrics
+    FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Public read biometric status" ON public.patient_biometrics
+    FOR SELECT USING (true);
+
+CREATE POLICY "Admin manage biometrics" ON public.patient_biometrics
+    FOR ALL USING (true);
+
+CREATE POLICY "Public insert verification logs" ON public.biometric_verification_logs
+    FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Admin read verification logs" ON public.biometric_verification_logs
     FOR SELECT USING (true);
 
 -- ============================================================================
@@ -565,3 +606,15 @@ VALUES
         '{"version": "1.0.0", "engine": "Dynamic Priority Queue + Rule Evaluator"}'::jsonb
     )
 ON CONFLICT DO NOTHING;
+
+-- ============================================================================
+-- 8. GRANT API ACCESS PERMISSIONS TO ANON & AUTHENTICATED ROLES
+-- ============================================================================
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+
