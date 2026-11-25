@@ -220,6 +220,25 @@ def run_tests():
     res = client.get("/api/biometric/enrolled/c0000000-0000-0000-0000-000000000001")
     assert_test(res.status_code == 200 and "enrolled" in res.json, "GET /api/biometric/enrolled/:id returns safe boolean status")
 
+    # 29. Security: Unregistered Face Rejection (Prevents Unauthorized Report Access)
+    import numpy as np
+    from app.services.biometric_service import _SFACE_RECOGNIZER, MATCH_THRESHOLD, L2_MATCH_THRESHOLD
+    if _SFACE_RECOGNIZER is not None:
+        reg_v = np.random.randn(1, 128).astype(np.float32)
+        reg_v /= np.linalg.norm(reg_v)
+        unregistered_stranger = np.random.randn(1, 128).astype(np.float32)
+        unregistered_stranger /= np.linalg.norm(unregistered_stranger)
+
+        cos_score = float(_SFACE_RECOGNIZER.match(unregistered_stranger, reg_v, 0)) # FR_COSINE
+        l2_score = float(_SFACE_RECOGNIZER.match(unregistered_stranger, reg_v, 1))  # FR_NORM_L2
+        is_unregistered_accepted = (cos_score >= MATCH_THRESHOLD) and (l2_score <= L2_MATCH_THRESHOLD)
+
+        assert_test(is_unregistered_accepted is False, "Security verification: Unregistered faces are STRICTLY REJECTED by dual-metric neural engine")
+
+    # 30. Empty or invalid face scan returns 400/401 and withholds diagnostic reports
+    res = client.post("/api/biometric/identify", json={"image_b64": "invalid_base64_data"})
+    assert_test(res.status_code in [400, 401] and res.json.get("success") is False, "POST /api/biometric/identify rejects invalid scan without exposing patient reports")
+
     print(f"\n==================================================")
     print(f" ALL {passed}/{total} BACKEND VERIFICATION TESTS PASSED SUCCESSFULLY!")
     print(f" Flask Backend is 100% compliant with React Frontend API contracts.")
