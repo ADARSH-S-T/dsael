@@ -69,6 +69,8 @@ def register():
                 )
                 if res.ok and res.json():
                     patient = res.json()[0]
+                else:
+                    print(f"[PatientRegister] Supabase rejected patient insert ({res.status_code}): {res.text}")
             except Exception as e:
                 print(f"[PatientRegister] Supabase patient error: {e}")
 
@@ -125,6 +127,8 @@ def register():
                 )
                 if res.ok and res.json():
                     created_test = res.json()[0]
+                else:
+                    print(f"[PatientRegister] Supabase rejected test insert ({res.status_code}): {res.text}")
             except Exception as e:
                 print(f"[PatientRegister] Supabase test create error: {e}")
 

@@ -79,18 +79,18 @@ export function CurrentTest({ test, onBack, onCompleted }) {
           {/* Patient Details */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200">
             <div>
-              <span className="text-slate-400 block mb-0.5">Patient Name</span>
-              <span className="font-semibold text-slate-900">{test.patient?.full_name || 'Patient'}</span>
+              <span className="text-slate-400 block mb-0.5">Patient ID</span>
+              <span className="font-mono font-semibold text-slate-900">{test.patient?.patient_code || 'PATIENT-001'}</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block mb-0.5">Patient Name (Masked)</span>
+              <span className="font-mono font-semibold text-slate-900">{test.patient?.full_name || 'XXXXX XXXXX'}</span>
             </div>
             <div>
               <span className="text-slate-400 block mb-0.5">Age / Gender</span>
               <span className="font-semibold text-slate-900">
                 {test.patient?.age || '-'} yrs • {test.patient?.gender || '-'}
               </span>
-            </div>
-            <div>
-              <span className="text-slate-400 block mb-0.5">Contact</span>
-              <span className="font-semibold text-slate-900">{test.patient?.phone || '-'}</span>
             </div>
             <div>
               <span className="text-slate-400 block mb-0.5">Assigned Staff</span>

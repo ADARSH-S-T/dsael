@@ -1,19 +1,17 @@
 """
 LabFlow Biometric Service
 ========================
-Uses OpenCV (cv2) with Haar Cascade + Local Binary Pattern Histograms (LBPH)
-for on-device face recognition without sending biometrics to any third-party API.
+Uses OpenCV (cv2) with YuNet Deep Neural Face Detector + Local Binary Pattern Histograms (LBPH)
+for secure, on-device face verification without sending biometrics to any untrusted third-party API.
 
 Architecture:
-- Face detection: OpenCV Haar Cascade (frontal face)
-- Liveness detection: texture analysis (LBP variance) + multi-frame blink simulation
-- Face embedding: LBPH histogram as a 1D feature vector (256 dims)
-- Storage: AES-256 encrypted JSON in local_db["patient_biometrics"]
-- Matching: Cosine similarity of LBPH histograms, threshold configurable via env
-- All raw images are deleted immediately after feature extraction
-
-Fallback: If OpenCV is unavailable, all biometric endpoints return 503 with a clear
-error so the existing application continues to work normally.
+- Face detection & alignment: YuNet (CNN-based neural detector with 5 landmark points)
+- Liveness detection: texture analysis (LBP variance) + Laplacian sharpness blur detection
+- Face embedding: 256-dimension normalized LBPH feature vector
+- Storage: AES-256 encrypted token stored in patient_biometrics table
+- Matching: Cosine similarity of feature vectors with configurable threshold (default: 0.72)
+- Security: All raw images are freed from memory immediately after feature extraction
+- Privacy: Never exposes raw templates or photos to frontend APIs
 """
 
 import os
@@ -25,7 +23,7 @@ import hashlib
 import time
 import numpy as np
 from datetime import datetime, timezone
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 try:
     import cv2
@@ -45,23 +43,33 @@ from app.config import DATA_DIR
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.72"))   # cosine similarity ≥ threshold = match
-LIVENESS_VAR_THRESHOLD = float(os.getenv("LIVENESS_VAR_THRESHOLD", "60.0"))  # LBP variance minimum
+MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.72"))       # cosine similarity threshold
+LIVENESS_VAR_THRESHOLD = float(os.getenv("LIVENESS_VAR_THRESHOLD", "40.0"))  # minimum texture variance
 MAX_FACE_ATTEMPTS_PER_HOUR = int(os.getenv("MAX_FACE_ATTEMPTS_PER_HOUR", "10"))
 
-# Encryption key – derive deterministically from JWT_SECRET so no key rotation headache
+# Encryption key – derived deterministically from JWT_SECRET
 _SECRET = os.getenv("JWT_SECRET", "labflow_super_secret_enterprise_jwt_key_2026")
 _KEY_BYTES = hashlib.sha256(_SECRET.encode()).digest()
-_FERNET_KEY = base64.urlsafe_b64encode(_KEY_BYTES)   # 32 raw bytes → 44-char url-safe base64
+_FERNET_KEY = base64.urlsafe_b64encode(_KEY_BYTES)   # 32 raw bytes -> 44-char url-safe base64
 _FERNET = Fernet(_FERNET_KEY) if CRYPTO_AVAILABLE else None
 
-# Haar cascade path bundled with OpenCV
-_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml" if CV2_AVAILABLE else ""
-_FACE_CASCADE = cv2.CascadeClassifier(_CASCADE_PATH) if CV2_AVAILABLE and _CASCADE_PATH else None
+# YuNet Neural Face Detector Model Path
+_YUNET_PATH = os.path.join(DATA_DIR, "yunet.onnx")
+_YUNET_DETECTOR = None
+
+if CV2_AVAILABLE and hasattr(cv2, "FaceDetectorYN") and os.path.exists(_YUNET_PATH):
+    try:
+        _YUNET_DETECTOR = cv2.FaceDetectorYN.create(_YUNET_PATH, "", (320, 320), score_threshold=0.6)
+    except Exception as e:
+        print(f"[Biometric] YuNet initialization error: {e}")
+
+# Haar cascade fallback (if available in this environment)
+_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml" if CV2_AVAILABLE and hasattr(cv2, 'data') else ""
+_FACE_CASCADE = cv2.CascadeClassifier(_CASCADE_PATH) if CV2_AVAILABLE and hasattr(cv2, 'CascadeClassifier') and _CASCADE_PATH else None
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Internal Helpers
 # ---------------------------------------------------------------------------
 
 def _encrypt(data: dict) -> str:
@@ -83,7 +91,6 @@ def _decode_image(b64_data: str) -> Optional[np.ndarray]:
     if not CV2_AVAILABLE:
         return None
     try:
-        # Strip data URI prefix if present
         if "," in b64_data:
             b64_data = b64_data.split(",", 1)[1]
         raw = base64.b64decode(b64_data)
@@ -94,31 +101,71 @@ def _decode_image(b64_data: str) -> Optional[np.ndarray]:
         return None
 
 
-def _detect_faces(gray: np.ndarray):
-    """Return list of (x, y, w, h) face rectangles."""
-    if _FACE_CASCADE is None:
-        return []
-    faces = _FACE_CASCADE.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(60, 60),
-        flags=cv2.CASCADE_SCALE_IMAGE
-    )
-    return faces if len(faces) > 0 else []
+def _detect_faces(img: np.ndarray) -> List[dict]:
+    """
+    Detect faces using YuNet neural detector (or Haar cascade fallback).
+    Returns list of dicts with:
+      - box: (x, y, w, h)
+      - confidence: float
+      - tilt: angle in degrees
+    """
+    if _YUNET_DETECTOR is not None:
+        h, w = img.shape[:2]
+        _YUNET_DETECTOR.setInputSize((w, h))
+        bgr = img if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        retval, raw_faces = _YUNET_DETECTOR.detect(bgr)
+        if raw_faces is None or len(raw_faces) == 0:
+            return []
+        
+        detected = []
+        for face in raw_faces:
+            box = face[:4].astype(int)
+            x, y, bw, bh = box
+            x = max(0, x)
+            y = max(0, y)
+            bw = min(w - x, bw)
+            bh = min(h - y, bh)
+            if bw < 30 or bh < 30:
+                continue
+
+            conf = float(face[-1])
+            # Check eye tilt from landmarks: right_eye = face[4:6], left_eye = face[6:8]
+            re_x, re_y = face[4], face[5]
+            le_x, le_y = face[6], face[7]
+            dy = le_y - re_y
+            dx = le_x - re_x
+            angle = abs(np.degrees(np.arctan2(dy, dx))) if dx != 0 else 0
+
+            detected.append({
+                "box": (int(x), int(y), int(bw), int(bh)),
+                "confidence": conf,
+                "tilt": float(angle)
+            })
+        return detected
+
+    if _FACE_CASCADE is not None:
+        gray = img if len(img.shape) == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = _FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60),
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+        return [{"box": (int(x), int(y), int(w), int(h)), "confidence": 0.9, "tilt": 0.0} for (x, y, w, h) in faces]
+
+    return []
 
 
 def _extract_lbph_histogram(gray_face: np.ndarray) -> np.ndarray:
     """
-    Compute Local Binary Pattern histogram as a compact face descriptor.
-    Returns a normalised 256-dimension float32 array.
+    Compute Local Binary Pattern histogram as a robust, invariant face feature vector.
+    Returns a normalized 256-dimension float32 array.
     """
-    # Resize to standard 128×128
     face_resized = cv2.resize(gray_face, (128, 128))
-
-    # Manual LBP computation (OpenCV's LBPH recognizer works per-cell; we want global histogram)
     h, w = face_resized.shape
     lbp = np.zeros_like(face_resized, dtype=np.uint8)
+
     for i in range(1, h - 1):
         for j in range(1, w - 1):
             center = int(face_resized[i, j])
@@ -144,18 +191,20 @@ def _extract_lbph_histogram(gray_face: np.ndarray) -> np.ndarray:
 
 def _liveness_score(gray_face: np.ndarray) -> float:
     """
-    Simple texture-based liveness: compute variance of Laplacian (blur detection)
-    + LBP variance.  Printed photos are blurry and have low texture variance.
-    Returns a score (higher = more likely live face).
+    Texture & sharpness liveness analysis:
+    - Laplacian variance detects blurry flat paper prints or low-res display replay.
+    - LBP micro-variance evaluates organic skin surface texture.
     """
-    laplacian_var = cv2.Laplacian(gray_face, cv2.CV_64F).var()
-    # Also check LBP variance
+    if gray_face is None or gray_face.size == 0:
+        return 0.0
+    laplacian_var = float(cv2.Laplacian(gray_face, cv2.CV_64F).var())
     lbp_hist = _extract_lbph_histogram(gray_face)
-    lbp_var = float(np.var(lbp_hist) * 1e6)   # scale up
+    lbp_var = float(np.var(lbp_hist) * 1e6)
     return float((laplacian_var + lbp_var) / 2.0)
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity between two normalized feature vectors."""
     dot = float(np.dot(a, b))
     na = float(np.linalg.norm(a))
     nb = float(np.linalg.norm(b))
@@ -165,55 +214,71 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public Biometric API
 # ---------------------------------------------------------------------------
 
 def is_biometric_available() -> bool:
-    return CV2_AVAILABLE and CRYPTO_AVAILABLE and _FACE_CASCADE is not None
+    """Returns True if the face recognition engine is fully operational."""
+    return CV2_AVAILABLE and CRYPTO_AVAILABLE and (_YUNET_DETECTOR is not None or _FACE_CASCADE is not None)
 
 
 def register_face(patient_id: str, image_b64: str, consent: bool) -> dict:
     """
-    Register a patient's face embedding.
-    1. Decode image → detect exactly one face → liveness check → extract histogram.
-    2. Encrypt histogram → store in patient_biometrics table.
-    3. Delete all intermediate image data immediately.
-    Returns dict with success/error.
+    Registers a patient's face embedding:
+    1. Validates explicit biometric consent.
+    2. Decodes image, validates exactly 1 face, checks tilt/guidance, evaluates liveness.
+    3. Extracts normalized 256-D LBPH embedding.
+    4. Encrypts template via AES-256 Fernet.
+    5. Stores encrypted template in patient_biometrics.
+    6. Destroys all raw image buffers from memory immediately.
     """
     if not is_biometric_available():
-        return {"success": False, "error": "Face recognition engine not available on this server."}
+        return {"success": False, "error": "Face recognition engine is not configured on this server."}
 
     if not consent:
         return {"success": False, "error": "Explicit biometric consent is required before registration."}
 
     img = _decode_image(image_b64)
     if img is None:
-        return {"success": False, "error": "Could not decode the provided image. Please retake."}
+        return {"success": False, "error": "Could not decode the provided image. Please retake the photo."}
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    del img   # free raw image immediately
-
-    faces = _detect_faces(gray)
+    # Detect faces
+    faces = _detect_faces(img)
     if len(faces) == 0:
-        return {"success": False, "error": "No face detected. Please face the camera directly and ensure good lighting."}
+        del img
+        return {"success": False, "error": "No face detected. Please face the camera directly with good lighting."}
     if len(faces) > 1:
+        del img
         return {"success": False, "error": "Multiple faces detected. Please ensure only your face is visible."}
 
-    x, y, w, h = faces[0]
-    face_roi = gray[y:y+h, x:x+w]
+    face_info = faces[0]
+    # Check orientation / head tilt
+    if face_info.get("tilt", 0) > 35:
+        del img
+        return {"success": False, "error": "Head is tilted. Please face the camera straight and look directly at the lens."}
 
+    x, y, w, h = face_info["box"]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    del img  # Raw BGR image destroyed immediately
+
+    face_roi = gray[y:y+h, x:x+w]
+    del gray
+
+    # Liveness verification
     liveness = _liveness_score(face_roi)
     if liveness < LIVENESS_VAR_THRESHOLD:
+        del face_roi
         return {
             "success": False,
-            "error": "Liveness check failed. Please use your live face, not a photograph.",
+            "error": "Liveness check failed. Please present your live face, not a photograph or screen.",
             "liveness_score": round(liveness, 2)
         }
 
+    # Extract 256-D embedding
     histogram = _extract_lbph_histogram(face_roi)
-    del face_roi   # free face ROI
+    del face_roi  # Face ROI destroyed immediately
 
-    # Encrypt the histogram
+    # Encrypt template
     encrypted_template = _encrypt({
         "histogram": histogram.tolist(),
         "registered_at": datetime.now(timezone.utc).isoformat()
@@ -234,7 +299,7 @@ def register_face(patient_id: str, image_b64: str, consent: bool) -> dict:
         "created_at": now_iso
     })
 
-    # Audit log
+    # Security Audit Log
     local_db.insert("activity_logs", {
         "user_id": patient_id,
         "action": "BIOMETRIC_REGISTERED",
@@ -253,42 +318,60 @@ def register_face(patient_id: str, image_b64: str, consent: bool) -> dict:
 
 def identify_by_face(image_b64: str) -> dict:
     """
-    1-to-many face identification.
-    Compares live face against ALL enrolled templates.
-    Returns the matching patient_id only if cosine similarity ≥ MATCH_THRESHOLD.
-    Never returns partial matches or closest-match below threshold.
+    1-to-many face identification:
+    Compares live face against all enrolled patient biometric templates.
+    Returns patient_id only if match confidence >= MATCH_THRESHOLD.
+    Never returns closest match when below threshold.
     """
     if not is_biometric_available():
-        return {"success": False, "error": "Face recognition engine not available on this server."}
+        return {"success": False, "error": "Face recognition engine is not configured on this server."}
 
     img = _decode_image(image_b64)
     if img is None:
         return {"success": False, "error": "Could not decode the provided image."}
 
+    faces = _detect_faces(img)
+    if len(faces) == 0:
+        del img
+        return {"success": False, "error": "No face detected in the scan. Please align your face with the camera."}
+    if len(faces) > 1:
+        del img
+        return {"success": False, "error": "Multiple faces detected. Please ensure only one person is in front of the camera."}
+
+    face_info = faces[0]
+    if face_info.get("tilt", 0) > 35:
+        del img
+        return {"success": False, "error": "Head is tilted. Please look straight into the camera."}
+
+    x, y, w, h = face_info["box"]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     del img
 
-    faces = _detect_faces(gray)
-    if len(faces) == 0:
-        return {"success": False, "error": "No face detected in the scan."}
-    if len(faces) > 1:
-        return {"success": False, "error": "Multiple faces detected. Please ensure only one person is visible."}
-
-    x, y, w, h = faces[0]
     face_roi = gray[y:y+h, x:x+w]
+    del gray
 
+    # Liveness check
     liveness = _liveness_score(face_roi)
     if liveness < LIVENESS_VAR_THRESHOLD:
+        del face_roi
+        # Log failed attempt
+        local_db.insert("biometric_verification_logs", {
+            "patient_id": None,
+            "verification_status": "LIVENESS_FAILED",
+            "confidence_score": 0.0,
+            "liveness_status": "FAIL",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
         return {
             "success": False,
-            "error": "Liveness check failed. Please use a live face, not a photograph or video.",
+            "error": "Liveness check failed. Please use your live face, not a photograph or digital display.",
             "liveness_score": round(liveness, 2)
         }
 
     live_hist = _extract_lbph_histogram(face_roi)
     del face_roi
 
-    # Load all enrolled templates
+    # 1-to-many matching against registered templates
     all_biometrics = [b for b in local_db.get("patient_biometrics") if b.get("registration_status") == "REGISTERED"]
 
     best_score = 0.0
@@ -306,10 +389,10 @@ def identify_by_face(image_b64: str) -> dict:
         except Exception:
             continue
 
-    # Log the verification attempt
+    # Record verification log
     now_iso = datetime.now(timezone.utc).isoformat()
     local_db.insert("biometric_verification_logs", {
-        "patient_id": best_patient_id,   # None if no match
+        "patient_id": best_patient_id,
         "verification_status": "MATCHED" if best_patient_id else "NO_MATCH",
         "confidence_score": round(best_score, 4),
         "liveness_status": "PASS",
@@ -333,7 +416,7 @@ def identify_by_face(image_b64: str) -> dict:
 
 
 def reset_biometric(patient_id: str, admin_id: str) -> dict:
-    """Admin action: disable/reset a patient's face registration."""
+    """Admin action: disable or reset a patient's face registration."""
     records = [b for b in local_db.get("patient_biometrics") if b.get("patient_id") == patient_id]
     if not records:
         return {"success": False, "error": "No biometric record found for this patient."}

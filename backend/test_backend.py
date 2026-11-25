@@ -178,6 +178,48 @@ def run_tests():
     res = client.get("/api/admin/activity-logs")
     assert_test(res.status_code == 200 and len(res.json["logs"]) >= 1, "GET /api/admin/activity-logs returns audit records")
 
+    # 23. Biometric Service Capability & Status
+    res = client.get("/api/biometric/status")
+    assert_test(res.status_code == 200 and res.json.get("success") and res.json.get("face_recognition_available") is True, "GET /api/biometric/status confirms face recognition operational")
+
+    # 24. Staff Dynamic Queue - Patient Identity Masking (Requirements 3 & 6)
+    res = client.get("/api/queue")
+    assert_test(res.status_code == 200, "GET /api/queue for staff privacy audit")
+    if res.json.get("queue") and len(res.json["queue"]) > 0:
+        first_q = res.json["queue"][0]
+        q_patient = first_q.get("patient")
+        if q_patient:
+            assert_test("X" in q_patient.get("full_name", ""), "Staff queue displays masked patient name (XXXXX XXXXX)")
+            assert_test("phone" not in q_patient or "•" in q_patient.get("phone", "") or q_patient.get("phone") is None, "Staff queue strips/masks personal phone number")
+
+    # 25. Staff Current Test - Patient Identity Masking (Requirement 3)
+    res = client.get("/api/staff/current-test?staff_id=b0000000-0000-0000-0000-000000000001")
+    assert_test(res.status_code == 200, "GET /api/staff/current-test for staff privacy audit")
+    curr_t = res.json.get("test")
+    if curr_t and curr_t.get("patient"):
+        assert_test("X" in curr_t["patient"].get("full_name", ""), "Staff current test masks patient name")
+        assert_test("•" in curr_t["patient"].get("phone", "") or curr_t["patient"].get("phone") is None, "Staff current test protects patient contact details")
+
+    # 26. Admin Biometric Patient Directory (Requirement 4)
+    res = client.get("/api/biometric/admin/patients")
+    assert_test(res.status_code == 200 and "patients" in res.json, "GET /api/biometric/admin/patients returns patient biometric enrollment list")
+    if res.json.get("patients") and len(res.json["patients"]) > 0:
+        p_sample = res.json["patients"][0]
+        assert_test("encrypted_face_template" not in p_sample, "Admin patient directory strictly conceals raw/encrypted face templates")
+        assert_test("biometric_status" in p_sample, "Admin patient directory includes enrollment status badge")
+
+    # 27. Admin Biometric Verification Logs (Requirement 4 & 5)
+    res = client.get("/api/biometric/admin/logs")
+    assert_test(res.status_code == 200 and "logs" in res.json, "GET /api/biometric/admin/logs returns verification audit logs")
+    if res.json.get("logs") and len(res.json["logs"]) > 0:
+        log_sample = res.json["logs"][0]
+        assert_test("encrypted_face_template" not in log_sample, "Verification logs strictly exclude biometric templates")
+        assert_test("confidence_score" in log_sample and "liveness_status" in log_sample, "Verification logs include confidence and liveness telemetry")
+
+    # 28. Biometric Enrolled Check Endpoint (Safe Boolean Only)
+    res = client.get("/api/biometric/enrolled/c0000000-0000-0000-0000-000000000001")
+    assert_test(res.status_code == 200 and "enrolled" in res.json, "GET /api/biometric/enrolled/:id returns safe boolean status")
+
     print(f"\n==================================================")
     print(f" ALL {passed}/{total} BACKEND VERIFICATION TESTS PASSED SUCCESSFULLY!")
     print(f" Flask Backend is 100% compliant with React Frontend API contracts.")

@@ -323,10 +323,31 @@ DEFAULT_STORE = {
 }
 
 
+import requests
+
 class LocalDbAdapter:
     def __init__(self):
         self.lock = threading.Lock()
         self.store = self.load_store()
+        self.session = requests.Session()
+        self.supabase_headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+
+    def _supabase_request(self, method: str, endpoint: str, **kwargs):
+        if not IS_SUPABASE_CONFIGURED:
+            return None
+        url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+        headers = dict(self.supabase_headers)
+        if "headers" in kwargs:
+            headers.update(kwargs.pop("headers"))
+        try:
+            res = self.session.request(method, url, headers=headers, timeout=2.5, **kwargs)
+            return res
+        except Exception as e:
+            return None
 
     def load_store(self):
         with self.lock:
@@ -360,26 +381,72 @@ class LocalDbAdapter:
             self._save_store()
 
     def get(self, table: str) -> list:
+        # Try fetching live from Supabase first
+        if IS_SUPABASE_CONFIGURED:
+            res = self._supabase_request("GET", f"{table}?select=*")
+            if res is not None and res.status_code == 200:
+                return res.json()
+            elif res is not None and res.status_code == 401:
+                # Permission denied - needs GRANT in Supabase SQL editor
+                print(f"[Supabase DB] Table '{table}' permission denied. Please run GRANT permissions in Supabase SQL Editor.")
+
+        # Local fallback cache
         with self.lock:
             if table not in self.store:
                 self.store[table] = []
-            # Return shallow copy of list so mutations are explicit
             return list(self.store[table])
 
     def insert(self, table: str, item: dict) -> dict:
+        record = {
+            "id": item.get("id") or str(uuid.uuid4()),
+            "created_at": item.get("created_at") or datetime.now(timezone.utc).isoformat(),
+            **item
+        }
+
+        # Try inserting directly to Supabase first
+        if IS_SUPABASE_CONFIGURED:
+            headers = {"Prefer": "return=representation"}
+            res = self._supabase_request("POST", table, json=record, headers=headers)
+            if res is not None and res.status_code in [200, 201]:
+                data = res.json()
+                created = data[0] if isinstance(data, list) and data else data
+                # Keep local cache in sync
+                with self.lock:
+                    if table not in self.store:
+                        self.store[table] = []
+                    self.store[table].append(created)
+                    self._save_store()
+                return created
+            elif res is not None and res.status_code == 401:
+                print(f"[Supabase DB] Insert '{table}' permission denied. Please run GRANT permissions in Supabase SQL Editor.")
+
         with self.lock:
             if table not in self.store:
                 self.store[table] = []
-            record = {
-                "id": item.get("id") or str(uuid.uuid4()),
-                "created_at": item.get("created_at") or datetime.now(timezone.utc).isoformat(),
-                **item
-            }
             self.store[table].append(record)
             self._save_store()
             return record
 
     def update(self, table: str, record_id: str, updates: dict):
+        # Try updating directly in Supabase first
+        if IS_SUPABASE_CONFIGURED:
+            headers = {"Prefer": "return=representation"}
+            clean_updates = {**updates, "updated_at": datetime.now(timezone.utc).isoformat()}
+            res = self._supabase_request("PATCH", f"{table}?id=eq.{record_id}", json=clean_updates, headers=headers)
+            if res is not None and res.status_code in [200, 204]:
+                data = res.json()
+                updated_record = data[0] if isinstance(data, list) and data else data
+                with self.lock:
+                    if table in self.store:
+                        for idx, r in enumerate(self.store[table]):
+                            if r.get("id") == record_id:
+                                self.store[table][idx] = {**r, **clean_updates}
+                                self._save_store()
+                                break
+                return updated_record
+            elif res is not None and res.status_code == 401:
+                print(f"[Supabase DB] Update '{table}' permission denied. Please run GRANT permissions in Supabase SQL Editor.")
+
         with self.lock:
             if table not in self.store:
                 return None
@@ -396,6 +463,17 @@ class LocalDbAdapter:
             return None
 
     def delete(self, table: str, record_id: str) -> bool:
+        if IS_SUPABASE_CONFIGURED:
+            res = self._supabase_request("DELETE", f"{table}?id=eq.{record_id}")
+            if res is not None and res.status_code in [200, 204]:
+                with self.lock:
+                    if table in self.store:
+                        self.store[table] = [r for r in self.store[table] if r.get("id") != record_id]
+                        self._save_store()
+                return True
+            elif res is not None and res.status_code == 401:
+                print(f"[Supabase DB] Delete '{table}' permission denied. Please run GRANT permissions in Supabase SQL Editor.")
+
         with self.lock:
             if table not in self.store:
                 return False

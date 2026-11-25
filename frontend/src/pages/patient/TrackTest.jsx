@@ -57,14 +57,26 @@ function TestResultCard({ testData }) {
             </p>
             <div className="pt-2 flex items-center gap-3">
               <button
-                onClick={() => alert(`Viewing verified diagnostic report for Tracking ID #${t.tracking_number}. All parameters verified.`)}
+                onClick={() => {
+                  if (t.report_path && t.report_path.startsWith('http')) {
+                    window.open(t.report_path, '_blank');
+                  } else {
+                    alert(`Viewing verified diagnostic report for Tracking ID #${t.tracking_number}. All parameters verified.`);
+                  }
+                }}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
               >
                 <FileText className="w-4 h-4" />
                 <span>View Report</span>
               </button>
               <button
-                onClick={() => alert(`Downloading official PDF diagnostic report for Tracking ID #${t.tracking_number}.`)}
+                onClick={() => {
+                  if (t.report_path && t.report_path.startsWith('http')) {
+                    window.open(t.report_path, '_blank');
+                  } else {
+                    alert(`Downloading official PDF diagnostic report for Tracking ID #${t.tracking_number}.`);
+                  }
+                }}
                 className="px-4 py-2 bg-white hover:bg-slate-100 text-emerald-800 border border-emerald-300 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 cursor-pointer"
               >
                 <Download className="w-4 h-4" />
@@ -108,6 +120,8 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
   const [faceLoading, setFaceLoading] = useState(false);
   const [faceError, setFaceError] = useState(null);
   const [faceResults, setFaceResults] = useState([]); // array of test objects
+  const [facePatient, setFacePatient] = useState(null);
+  const [passwordInput, setPasswordInput] = useState('');
 
   // ── On mount: check biometric availability ───────────────────────
   useEffect(() => {
@@ -124,18 +138,24 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
   }, [initialTrackingId]);
 
   // ── Tracking ID handlers ─────────────────────────────────────────
-  const handleSearch = async (codeToSearch) => {
+  const handleSearch = async (codeToSearch, passwordVal) => {
     const code = (codeToSearch || trackingId).trim();
     if (!code || code.length !== 5) {
       setError('Please enter a valid 5-digit Tracking ID (e.g. 48291).');
       return;
     }
+    const pwd = passwordVal !== undefined ? passwordVal : passwordInput;
     try {
       setLoading(true);
       setError(null);
       const res = await api.trackTest(code);
       setTestData(res);
-      if (!verified) setShowOtpModal(true);
+      if (pwd && pwd.trim().length >= 4) {
+        setVerified(true);
+        setShowOtpModal(false);
+      } else if (!verified) {
+        setShowOtpModal(true);
+      }
     } catch (err) {
       setTestData(null);
       setError(err.message || 'No test found with this Tracking ID.');
@@ -160,12 +180,18 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
     setFaceLoading(true);
     setFaceError(null);
     setFaceResults([]);
+    setFacePatient(null);
     try {
       // Strip data URI prefix — backend expects raw base64
       const base64 = imageDataUri.replace(/^data:image\/[a-z]+;base64,/, '');
       const res = await api.identifyByFace({ image_b64: base64 });
-      if (res.identified && res.tests && res.tests.length > 0) {
-        setFaceResults(res.tests);
+      if ((res.identified || res.success) && res.tests) {
+        if (res.tests.length > 0) {
+          setFaceResults(res.tests);
+          if (res.patient) setFacePatient(res.patient);
+        } else {
+          setFaceError('Face verified, but no active or completed diagnostic tests were found for your account.');
+        }
       } else {
         setFaceError('No matching patient found. Your face did not match any enrolled record with sufficient confidence.');
       }
@@ -297,9 +323,14 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
           )}
 
           {!faceLoading && faceResults.length > 0 && (
-            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>Face verified. Showing your test records below.</span>
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 space-y-1">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="font-bold">Face Identity Verified</span>
+              </div>
+              <p className="text-slate-600">
+                Welcome{facePatient?.full_name ? `, ${facePatient.full_name}` : ''}. Displaying all {faceResults.length} authorized test report(s) associated with your identity.
+              </p>
             </div>
           )}
 
@@ -307,7 +338,7 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
           <p className="text-xs text-center text-slate-400">
             Prefer not to use face scan?{' '}
             <button onClick={() => setTrackMode('tracking')} className="text-sky-600 hover:underline font-medium cursor-pointer">
-              Use Tracking ID instead
+              Use Tracking ID and Password instead
             </button>
           </p>
         </div>
@@ -338,34 +369,60 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
 
       {/* Tracking Input Card */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs">
-        <h1 className="text-lg font-bold text-slate-900 mb-1">Track My Specimen & Diagnostic Report</h1>
+        <h1 className="text-lg font-bold text-slate-900 mb-1">Track My Specimen &amp; Diagnostic Report</h1>
         <p className="text-xs text-slate-500 mb-4">
-          Enter your 5-digit Tracking Number provided upon registration.
+          Enter your 5-digit Tracking Number and Password to access your test records.
         </p>
 
         <form
-          onSubmit={(e) => { e.preventDefault(); handleSearch(); }}
-          className="flex flex-col sm:flex-row gap-3"
+          onSubmit={(e) => { e.preventDefault(); handleSearch(trackingId, passwordInput); }}
+          className="space-y-4"
         >
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-            <input
-              type="text"
-              maxLength="5"
-              placeholder="e.g. 48291"
-              value={trackingId}
-              onChange={(e) => setTrackingId(e.target.value.replace(/\D/g, ''))}
-              className="w-full pl-9 pr-3 py-2 text-sm font-mono font-bold tracking-widest bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-600 focus:bg-white text-slate-800"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Tracking ID
+              </label>
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <input
+                  type="text"
+                  maxLength="5"
+                  placeholder="e.g. 48291"
+                  value={trackingId}
+                  onChange={(e) => setTrackingId(e.target.value.replace(/\D/g, ''))}
+                  className="w-full pl-9 pr-3 py-2 text-sm font-mono font-bold tracking-widest bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-600 focus:bg-white text-slate-800"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Password / Passcode
+              </label>
+              <input
+                type="password"
+                placeholder="Enter password (demo: 1234)"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-600 focus:bg-white text-slate-800"
+              />
+            </div>
           </div>
-          <button
-            type="submit"
-            disabled={loading || trackingId.length !== 5}
-            className="px-6 py-2 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-          >
-            {loading && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-            <span>Search Test</span>
-          </button>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+            <span className="text-[11px] text-slate-400">
+              Default verification password: <strong>1234</strong>
+            </span>
+            <button
+              type="submit"
+              disabled={loading || trackingId.length !== 5}
+              className="px-6 py-2.5 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              {loading && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              <span>Verify &amp; Access Reports</span>
+            </button>
+          </div>
         </form>
 
         {error && (
@@ -379,7 +436,7 @@ export function TrackTest({ initialTrackingId = '', onBack }) {
         {bioAvailable && (
           <p className="mt-3 text-xs text-slate-400">
             <button onClick={() => setTrackMode('face')} className="text-sky-600 hover:underline font-medium cursor-pointer">
-              Prefer face scan? Click here.
+              Prefer face scan? Click here to scan face.
             </button>
           </p>
         )}

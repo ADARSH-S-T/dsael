@@ -152,6 +152,7 @@ def identify_patient():
 
         return jsonify({
             "success": True,
+            "identified": True,
             "confidence": result["confidence"],
             "liveness_score": result.get("liveness_score"),
             "patient": safe_patient,

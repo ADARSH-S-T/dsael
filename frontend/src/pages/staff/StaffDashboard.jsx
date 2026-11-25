@@ -153,7 +153,7 @@ export function StaffDashboard({ onOpenCurrentTest }) {
               <tr className="bg-slate-100/60 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
                 <th className="py-3 px-4">Pos</th>
                 <th className="py-3 px-4">Tracking ID</th>
-                <th className="py-3 px-4">Patient Name</th>
+                <th className="py-3 px-4">Patient ID / Alias</th>
                 <th className="py-3 px-4">Test Name</th>
                 <th className="py-3 px-4">Sample Type</th>
                 <th className="py-3 px-4">Priority Level</th>
@@ -171,8 +171,8 @@ export function StaffDashboard({ onOpenCurrentTest }) {
                     <td className="py-3 px-4 font-mono font-bold text-sky-700">
                       {item.tracking_number}
                     </td>
-                    <td className="py-3 px-4 font-semibold text-slate-800">
-                      {item.patient?.full_name || 'Patient'}
+                    <td className="py-3 px-4 font-mono font-semibold text-slate-700">
+                      {maskName(item.patient?.full_name)}
                     </td>
                     <td className="py-3 px-4 font-medium text-slate-700">
                       {item.test_name}
